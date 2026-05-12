@@ -182,6 +182,7 @@ def train(
     print(f"      Train / Valid / Test KGE (nivel tripleta, dentro del 95 %): "
           f"{training.num_triples:,} / {validation.num_triples:,} / {testing.num_triples:,}")
 
+
     print(f"\n[2/3] Entrenando {model_name}  "
           f"(dim={dim}, epochs={eff_epochs}, lr={eff_lr}, loss={loss}, "
           f"negs={num_negs}, device={device}, eval_batch={eff_eval_bs}) ...")

@@ -133,9 +133,9 @@ def run_phase3(top_k=None, kge_model=None):
     run(top_k=top_k or cfg.TOP_K_PREDICT, model_name=kge_model or 'TransE')
 
 
-def run_eval_kge_compare():
+def run_eval_kge_compare(live=False, n_samples=None):
     from src.evaluacion.eval_kge_comparacion import run
-    run()
+    run(live=live, n_samples=n_samples)
 
 
 def run_eval_kge(kge_model=None, n_samples=None, top_k=10):
@@ -226,11 +226,13 @@ def main():
     # Opciones Phase 6
     parser.add_argument("--n-samples",   type=int, default=None,
                         help=f"Nº de incidencias a evaluar (default: {cfg.EVAL_SAMPLE_N})")
-    # Opciones compare
+    # Opciones compare / eval-kge-compare
     parser.add_argument("--verbalization-check", action="store_true",
                         help="Verificar integridad de verbalización (solo phase compare)")
     parser.add_argument("--n-verb", type=int, default=50,
                         help="Muestras para verificación de verbalización (default: 50)")
+    parser.add_argument("--live-eval", action="store_true",
+                        help="Sección B: evaluación en vivo sobre LP_EVAL_CORPUS (eval-kge-compare)")
 
     args = parser.parse_args()
     phase = args.phase
@@ -266,7 +268,7 @@ def main():
                 verbalization_check=args.verbalization_check,
             )
         elif p == "eval-kge-compare":
-            run_eval_kge_compare()
+            run_eval_kge_compare(live=args.live_eval, n_samples=args.n_samples)
         elif p == "eval-kge":
             run_eval_kge(
                 kge_model=args.kge_model,
