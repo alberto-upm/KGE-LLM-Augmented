@@ -144,34 +144,42 @@ def train(
     print(f"FASE 2 — Entrenamiento {model_name} con PyKEEN")
     print("=" * 60)
 
-    for tsv in (cfg.TRAIN_TSV, cfg.VALID_TSV, cfg.TEST_TSV):
+    for tsv in (cfg.TRAIN_TSV, cfg.VALID_TSV):
         if not tsv.exists():
             raise FileNotFoundError(
                 f"No encontrado: {tsv}\n"
                 "Ejecuta primero:  python src/phase1_triples.py"
             )
 
-    print(f"[1/3] Cargando splits pre-divididos por bloques de incidencia ...")
-    # train.tsv tiene los bloques de incidencias del 95 % de entrenamiento
-    # (≈85.5 % del total, Phase 1 ya los dividió correctamente por incidencia)
-    training = TriplesFactory.from_path(cfg.TRAIN_TSV)
-    # valid.tsv y test.tsv usan el vocabulario de train para que PyKEEN
-    # no rechace entidades/relaciones no vistas en el entrenamiento.
-    validation = TriplesFactory.from_path(
-        cfg.VALID_TSV,
-        entity_to_id=training.entity_to_id,
-        relation_to_id=training.relation_to_id,
+    print(f"[1/3] Cargando tripletas del 95 % y dividiendo a nivel de tripleta para KGE ...")
+    # La división por bloques de incidencia (Phase 1) garantiza que el 5 % de test
+    # de sistema nunca se vea durante el entrenamiento ni la evaluación KGE.
+    # Dentro del 95 % restante (train.tsv + valid.tsv), hacemos una división
+    # aleatoria a nivel de TRIPLETA (80/10/10) para que las métricas KGE sean
+    # válidas: todas las entidades aparecen en el conjunto de entrenamiento.
+    import numpy as np
+
+    def _read_tsv(path):
+        triples = []
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) == 3:
+                    triples.append(parts)
+        return triples
+
+    all_triples_95 = _read_tsv(cfg.TRAIN_TSV) + _read_tsv(cfg.VALID_TSV)
+    combined = TriplesFactory.from_labeled_triples(
+        np.array(all_triples_95, dtype=str),
+        create_inverse_triples=False,
     )
-    # test.tsv = 5 % de sistema; se usa aquí para la métrica KGE estándar.
-    # La evaluación del sistema completo (CBR + Reglas + LLM) se hace aparte.
-    testing = TriplesFactory.from_path(
-        cfg.TEST_TSV,
-        entity_to_id=training.entity_to_id,
-        relation_to_id=training.relation_to_id,
+    training, validation, testing = combined.split(
+        [0.80, 0.10, 0.10],
+        random_state=cfg.RANDOM_SEED,
     )
     print(f"      Entidades:  {training.num_entities:,}")
     print(f"      Relaciones: {training.num_relations:,}")
-    print(f"      Train / Valid / Test (bloques de incidencia): "
+    print(f"      Train / Valid / Test KGE (nivel tripleta, dentro del 95 %): "
           f"{training.num_triples:,} / {validation.num_triples:,} / {testing.num_triples:,}")
 
     print(f"\n[2/3] Entrenando {model_name}  "
