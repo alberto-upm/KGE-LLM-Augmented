@@ -34,10 +34,12 @@ EVAL_DIR    = OUT_DIR / "evaluation"
 QA_CORPUS   = CORPUS_DIR / "qa_corpus.json"
 TRIPLES_VRB = CORPUS_DIR / "triples_verbalized.json"
 
-# Splits PyKEEN
-TRAIN_TSV   = TRIPLES_DIR / "train.tsv"
-VALID_TSV   = TRIPLES_DIR / "valid.tsv"
-TEST_TSV    = TRIPLES_DIR / "test.tsv"
+# Splits Phase 1 (por bloques de incidencia)
+TRAIN_TSV    = TRIPLES_DIR / "train.tsv"
+VALID_TSV    = TRIPLES_DIR / "valid.tsv"
+TEST_TSV     = TRIPLES_DIR / "test.tsv"       # 5 % sistema — nunca visto por KGE
+# Split KGE test (triple-level, generado automáticamente en Phase 2)
+KGE_TEST_TSV = TRIPLES_DIR / "kge_test.tsv"  # 10 % KGE — entidades conocidas
 
 # Predicciones y evaluación
 IMPLICIT_RELS_FILE  = PRED_DIR / "implicit_relations.json"

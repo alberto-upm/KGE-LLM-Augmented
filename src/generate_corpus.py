@@ -776,8 +776,11 @@ def generate_link_prediction_eval_corpus(
     """
     Genera data/corpus/link_prediction_eval.json para comparar modelos KGE.
 
-    IMPORTANTE: usa exclusivamente las tripletas de test.tsv (el 10% que el
-    modelo NO vio durante el entrenamiento) para evitar contaminación.
+    IMPORTANTE: usa exclusivamente las tripletas de kge_test.tsv (el 10 %
+    del split triple-level que el KGE NO vio durante el entrenamiento, pero
+    cuyas entidades SÍ están en el vocabulario del modelo).
+    No usa test.tsv del sistema (5 % bloques de incidencias) porque esas
+    entidades no están en el vocabulario del KGE y predict_tails devolvería [].
 
     Cada entrada tiene:
       {
@@ -793,17 +796,16 @@ def generate_link_prediction_eval_corpus(
     if out_path is None:
         out_path = cfg.LP_EVAL_CORPUS
 
-    # Cargar solo las tripletas del conjunto de test (nunca vistas por el modelo)
-    if not cfg.TEST_TSV.exists():
+    if not cfg.KGE_TEST_TSV.exists():
         raise FileNotFoundError(
-            f"No encontrado: {cfg.TEST_TSV}\n"
-            "Ejecuta primero:  python src/phase1_triples.py"
+            f"No encontrado: {cfg.KGE_TEST_TSV}\n"
+            "Ejecuta primero:  python src/phase2_kge_train.py  (genera kge_test.tsv)"
         )
 
-    print(f"Cargando tripletas de test desde {cfg.TEST_TSV} ...")
+    print(f"Cargando tripletas de test KGE desde {cfg.KGE_TEST_TSV} ...")
     from collections import defaultdict as _dd
     test_by_pred: dict = _dd(list)
-    with open(cfg.TEST_TSV, encoding="utf-8") as f:
+    with open(cfg.KGE_TEST_TSV, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -882,18 +884,18 @@ def generate_entity_to_entity_eval_corpus(out_path=None) -> list[dict]:
 
     out_path = Path(out_path) if out_path else cfg.ENTITY_EVAL_CORPUS
 
-    if not cfg.TEST_TSV.exists():
+    if not cfg.KGE_TEST_TSV.exists():
         raise FileNotFoundError(
-            f"No encontrado: {cfg.TEST_TSV}\n"
-            "Ejecuta primero: python src/phase1_triples.py"
+            f"No encontrado: {cfg.KGE_TEST_TSV}\n"
+            "Ejecuta primero:  python src/phase2_kge_train.py  (genera kge_test.tsv)"
         )
 
     # Conjunto de propiedades relevantes para el índice
     relevant_props = {p for pair in cfg.ENTITY_EVAL_PAIRS for p in pair}
 
-    # Cargar test.tsv e indexar por incidencia
+    # Cargar kge_test.tsv e indexar por incidencia
     test_index: dict[str, dict[str, str]] = {}  # {incident_id: {prop: first_value}}
-    with open(cfg.TEST_TSV, "r", encoding="utf-8") as f:
+    with open(cfg.KGE_TEST_TSV, "r", encoding="utf-8") as f:
         for line in f:
             parts = line.rstrip("\n").split("\t")
             if len(parts) < 3:

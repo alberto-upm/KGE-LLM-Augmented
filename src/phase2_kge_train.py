@@ -182,6 +182,17 @@ def train(
     print(f"      Train / Valid / Test KGE (nivel tripleta, dentro del 95 %): "
           f"{training.num_triples:,} / {validation.num_triples:,} / {testing.num_triples:,}")
 
+    # Guardar el 10 % de test KGE para que generate_corpus.py lo use
+    # como fuente de LP_EVAL_CORPUS (entidades conocidas, tripletas no vistas).
+    if not cfg.KGE_TEST_TSV.exists():
+        cfg.TRIPLES_DIR.mkdir(parents=True, exist_ok=True)
+        id2ent = {v: k for k, v in training.entity_to_id.items()}
+        id2rel = {v: k for k, v in training.relation_to_id.items()}
+        with open(cfg.KGE_TEST_TSV, "w", encoding="utf-8") as _f:
+            for row in testing.mapped_triples.tolist():
+                _f.write(f"{id2ent[row[0]]}\t{id2rel[row[1]]}\t{id2ent[row[2]]}\n")
+        print(f"      KGE test guardado en {cfg.KGE_TEST_TSV}")
+
 
     print(f"\n[2/3] Entrenando {model_name}  "
           f"(dim={dim}, epochs={eff_epochs}, lr={eff_lr}, loss={loss}, "
@@ -237,7 +248,8 @@ def train(
     metrics = result.metric_results.to_dict()
     hits = metrics.get("both", {}).get("realistic", {})
     print(f"\n--- Métricas en test set ({model_name}) ---")
-    for k in ("hits_at_1", "hits_at_3", "hits_at_10", "mean_reciprocal_rank"):
+    for k in ("hits_at_1", "hits_at_3", "hits_at_10",
+              "inverse_harmonic_mean_rank", "mean_reciprocal_rank"):
         v = hits.get(k)
         if v is not None:
             print(f"  {k}: {v:.4f}")
@@ -278,12 +290,14 @@ def _save_comparison_table(results: dict) -> None:
     for model_name, result in results.items():
         metrics = result.metric_results.to_dict()
         hits = metrics.get("both", {}).get("realistic", {})
+        # PyKEEN >= 1.8 usa "inverse_harmonic_mean_rank"; versiones anteriores "mean_reciprocal_rank"
+        mrr = hits.get("inverse_harmonic_mean_rank") or hits.get("mean_reciprocal_rank", 0.0)
         rows.append({
             "model":  model_name,
-            "hit@1":  round(hits.get("hits_at_1",             0.0), 4),
-            "hit@3":  round(hits.get("hits_at_3",             0.0), 4),
-            "hit@10": round(hits.get("hits_at_10",            0.0), 4),
-            "mrr":    round(hits.get("mean_reciprocal_rank",  0.0), 4),
+            "hit@1":  round(hits.get("hits_at_1",  0.0), 4),
+            "hit@3":  round(hits.get("hits_at_3",  0.0), 4),
+            "hit@10": round(hits.get("hits_at_10", 0.0), 4),
+            "mrr":    round(mrr,                         4),
         })
 
     cfg.MODEL_COMPARISON_DIR.mkdir(parents=True, exist_ok=True)

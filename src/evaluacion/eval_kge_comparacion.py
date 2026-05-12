@@ -44,7 +44,59 @@ def load_training_comparison() -> list[dict]:
             "  python src/phase2_kge_train.py --all-models"
         )
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        rows = json.load(f)
+
+    # Si el MRR está a 0 en todos los modelos, probablemente se guardó con la
+    # clave incorrecta ("mean_reciprocal_rank" en vez de "inverse_harmonic_mean_rank").
+    # Intentamos recalcularlo desde los resultados guardados por PyKEEN en disco.
+    if all(r.get("mrr", 0.0) == 0.0 for r in rows):
+        rows = _fix_mrr_from_saved_results(rows)
+
+    return rows
+
+
+def _fix_mrr_from_saved_results(rows: list[dict]) -> list[dict]:
+    """
+    Recalcula el MRR leyendo metric_results.json de cada modelo entrenado.
+    Sobreescribe training_comparison.json si los valores cambian.
+    """
+    import json as _json
+
+    updated = False
+    for row in rows:
+        model_name = row["model"]
+        results_path = cfg.model_dir(model_name) / "results.json"
+        if not results_path.exists():
+            continue
+        with open(results_path, encoding="utf-8") as f:
+            data = _json.load(f)
+
+        # Navegar la estructura: {metrics: {both: {realistic: {...}}}}
+        hits = (data.get("metrics", {})
+                    .get("both", {})
+                    .get("realistic", {}))
+        if not hits:
+            continue
+
+        mrr = hits.get("inverse_harmonic_mean_rank") or hits.get("mean_reciprocal_rank", 0.0)
+        if mrr and mrr != row.get("mrr", 0.0):
+            row["mrr"]    = round(mrr, 4)
+            row["hit@1"]  = round(hits.get("hits_at_1",  row.get("hit@1",  0.0)), 4)
+            row["hit@3"]  = round(hits.get("hits_at_3",  row.get("hit@3",  0.0)), 4)
+            row["hit@10"] = round(hits.get("hits_at_10", row.get("hit@10", 0.0)), 4)
+            updated = True
+
+    if updated:
+        path = cfg.MODEL_COMPARISON_DIR / "training_comparison.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False, indent=2)
+        # Actualizar también best_model.json
+        best = max(rows, key=lambda r: r.get("mrr", 0.0))
+        with open(cfg.BEST_MODEL_FILE, "w", encoding="utf-8") as f:
+            json.dump(best, f, ensure_ascii=False, indent=2)
+        print("  [Info] MRR recalculado desde results.json y training_comparison.json actualizado.")
+
+    return rows
 
 
 def load_best() -> dict | None:
