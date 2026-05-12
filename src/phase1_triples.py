@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 # Añadir src/ al path para importar generate_corpus
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from rdflib import RDF
 
