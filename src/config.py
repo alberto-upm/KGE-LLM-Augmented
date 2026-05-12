@@ -22,6 +22,8 @@ TTL_FILE    = DATA_DIR / "filtrado.ttl"
 
 TRIPLES_DIR = DATA_DIR / "triples"
 CORPUS_DIR  = DATA_DIR / "corpus"
+RULES_DIR   = DATA_DIR / "reglas"
+RULES_PATH  = RULES_DIR / "rules-1000-3"
 
 OUT_DIR     = BASE_DIR / "out"
 MAPS_DIR    = OUT_DIR / "maps"  # Mapas entity_to_id / relation_to_id (compartidos)

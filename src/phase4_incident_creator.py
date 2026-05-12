@@ -1,17 +1,20 @@
 """
-Creador guiado de incidencias con CBR + KGE + LLM conversacional.
+Creador guiado de incidencias con Reglas + CBR + KGE + LLM conversacional.
 
-Flujo:
+Flujo (inferencia en cascada):
   1. El usuario describe el problema en texto libre → se extraen entidades conocidas
      mediante lookup contra el grafo (company__X, employee__N, typeIncident__N, ...)
   2. Para cada propiedad pendiente:
-     a. KGE (CBR + predict_tails) genera recomendaciones basadas en incidencias similares
-     b. Si LLM disponible: el LLM formula una pregunta natural con las opciones KGE
-        como contexto. El usuario responde libremente y el LLM extrae el identificador.
-     c. Si LLM no disponible: menú numerado clásico.
+     a. Motor de reglas (AnyBURL): si existe una regla aplicable con las propiedades
+        ya conocidas, se presenta su sugerencia etiquetada como [REGLA] y se detiene.
+     b. Si no hay regla aplicable → KGE + CBR: genera recomendaciones mediante
+        predict_tails sobre proxies CBR, fusionados con RRF.
+     c. Interfaz: si hay LLM, pregunta conversacional; si no, menú numerado.
   3. Al completar todos los campos, el LLM genera un resumen final y se guarda en JSONL.
+     El registro incluye "traceability": fuente de cada valor (RULE, KGE, CBR, USER).
 
-El KGE es el motor de recomendación (anti-alucinación).
+El motor de reglas tiene prioridad absoluta (mayor precisión, determinismo).
+El KGE+CBR actúa de red de seguridad cuando no existe regla aplicable.
 El LLM es solo la interfaz conversacional, NO la fuente de conocimiento.
 
 Uso:
@@ -273,24 +276,33 @@ class IncidentCreatorSession:
         self.top_k           = top_k
         self._openai_client  = None
         self.llm             = None  # KGEAugmentedLLM para el resumen final
+        self._trace: dict[str, dict] = {}  # trazabilidad: {prop: {"value", "source", ...}}
 
         print(f"\n{'='*60}")
         print("  Cargando recursos ...")
         print(f"{'='*60}")
 
         # Mapa de incidencias históricas (desde TSV, sin rdflib)
-        print(f"  [1/3] Cargando incidencias desde TSV ...")
+        print(f"  [1/4] Cargando incidencias desde TSV ...")
         self.incidents_map = _build_incidents_map_from_tsv()
         print(f"        {len(self.incidents_map):,} incidencias históricas cargadas.")
 
+        # Motor de reglas AnyBURL
+        from src.rules.rule_engine import RuleEngine
+        print(f"  [2/4] Cargando motor de reglas ...")
+        self.rule_engine = RuleEngine(cfg.RULES_PATH)
+        _stats = self.rule_engine.stats()
+        print(f"        {_stats['total_rules']} reglas cargadas "
+              f"({len(_stats['head_preds'])} predicados de cabeza).")
+
         # Modelo KGE
         from src.phase3_link_prediction import load_model_by_name
-        print(f"  [2/3] Cargando modelo KGE: {kge_model_name} ...")
+        print(f"  [3/4] Cargando modelo KGE: {kge_model_name} ...")
         self.model, self.factory = load_model_by_name(kge_model_name)
 
         # LLM (opcional)
         if use_llm:
-            print(f"  [3/3] Conectando con LLM: {llm_model_name} ...")
+            print(f"  [4/4] Conectando con LLM: {llm_model_name} ...")
             try:
                 from openai import OpenAI
                 from src.phase4_llm_inference import KGEAugmentedLLM
@@ -307,7 +319,7 @@ class IncidentCreatorSession:
                 self._openai_client = None
                 self.llm = None
         else:
-            print("  [3/3] Modo sin LLM (menú numerado).")
+            print("  [4/4] Modo sin LLM (menú numerado).")
 
         print(f"{'='*60}\n")
 
@@ -387,6 +399,7 @@ class IncidentCreatorSession:
     def run(self) -> dict:
         """Ejecuta la sesión. Devuelve el dict de la incidencia completada."""
         incident: dict[str, str | None] = {p: None for p in INCIDENT_PROPS}
+        self._trace = {}
 
         print("=== Creación de nueva incidencia ===\n")
 
@@ -405,6 +418,10 @@ class IncidentCreatorSession:
                 print()
                 for prop, val in pre_filled.items():
                     incident[prop] = val
+                    self._trace[prop] = {
+                        "value": val, "source": "USER",
+                        "rule_id": None, "confidence": 1.0,
+                    }
                     label = _PROP_LABELS.get(prop, prop)
                     print(f"  [Detectado] {label} = {val}")
             else:
@@ -434,7 +451,44 @@ class IncidentCreatorSession:
                 recs = []
                 continue
 
-            # Calcular recomendaciones una sola vez por campo
+            # ---- Rama REGLA (prioridad máxima en la cascada) ----
+            rule_hint = self.rule_engine.infer(incident, prop)
+            if rule_hint:
+                rule_val  = rule_hint["value"]
+                rule_conf = rule_hint["confidence"]
+                rule_id   = rule_hint["rule_id"]
+                print(f"\n[REGLA {rule_id}, conf={rule_conf:.2f}] Sugerencia para {label}: {rule_val}")
+                print("¿Aceptar? (s/si = aceptar | valor propio | skip | exit)\n")
+                try:
+                    user_input = input("> ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print("\n[Interrupción — guardando lo completado]")
+                    break
+
+                cmd = user_input.lower().strip()
+                if cmd in ("salir", "exit", "quit"):
+                    break
+                if cmd in ("saltar", "skip"):
+                    print(f"  ⟳ {label} dejado sin rellenar.")
+                    prop_idx += 1; recs = []
+                    continue
+                if cmd in ("s", "si", "y", "yes") or not user_input:
+                    incident[prop] = rule_val
+                    self._trace[prop] = rule_hint
+                    print(f"  ✓ {label} = {rule_val}  [REGLA]")
+                    prop_idx += 1; recs = []
+                    continue
+                # El usuario escribe un valor propio → respetarlo
+                incident[prop] = user_input
+                self._trace[prop] = {
+                    "value": user_input, "source": "USER",
+                    "rule_id": None, "confidence": 1.0,
+                }
+                print(f"  ✓ {label} = {user_input}  [USUARIO]")
+                prop_idx += 1; recs = []
+                continue
+
+            # ---- Calcular recomendaciones KGE+CBR (solo si no hay regla) ----
             if not recs:
                 recs, n_proxies = recommend_property(
                     known_props=incident,
@@ -478,6 +532,14 @@ class IncidentCreatorSession:
                 known_ids = {ent for ent, _, _ in recs}
                 if chosen is not None and chosen in known_ids:
                     incident[prop] = chosen
+                    freq = next((f for e, f, _ in recs if e == chosen), 0)
+                    score = next((s for e, _, s in recs if e == chosen), 0.0)
+                    self._trace[prop] = {
+                        "value": chosen,
+                        "source": "CBR" if freq > 0 else "KGE",
+                        "rule_id": None,
+                        "confidence": float(score),
+                    }
                     print(f"  ✓ {label} = {chosen}")
                     prop_idx += 1; recs = []
                     continue
@@ -492,6 +554,14 @@ class IncidentCreatorSession:
 
                 if extracted:
                     incident[prop] = extracted
+                    freq = next((f for e, f, _ in recs if e == extracted), 0)
+                    score = next((s for e, _, s in recs if e == extracted), 0.0)
+                    self._trace[prop] = {
+                        "value": extracted,
+                        "source": "CBR" if freq > 0 else "KGE",
+                        "rule_id": None,
+                        "confidence": float(score),
+                    }
                     print(f"  ✓ {label} = {extracted}")
                     prop_idx += 1; recs = []
                 else:
@@ -530,6 +600,20 @@ class IncidentCreatorSession:
                     known_ids = {ent for ent, _, _ in recs}
                     if chosen in known_ids or not recs:
                         incident[prop] = chosen
+                        if chosen in known_ids:
+                            freq = next((f for e, f, _ in recs if e == chosen), 0)
+                            score = next((s for e, _, s in recs if e == chosen), 0.0)
+                            self._trace[prop] = {
+                                "value": chosen,
+                                "source": "CBR" if freq > 0 else "KGE",
+                                "rule_id": None,
+                                "confidence": float(score),
+                            }
+                        else:
+                            self._trace[prop] = {
+                                "value": chosen, "source": "USER",
+                                "rule_id": None, "confidence": 1.0,
+                            }
                         print(f"  ✓ {label} = {chosen}")
                         prop_idx += 1; recs = []
                     else:
@@ -609,14 +693,31 @@ class IncidentCreatorSession:
             except Exception as e:
                 print(f"\n  [!] LLM no pudo generar resumen: {e}")
 
+        if self._trace:
+            print("\n  Trazabilidad:")
+            for p in INCIDENT_PROPS:
+                t = self._trace.get(p)
+                if t is None:
+                    continue
+                src = t["source"]
+                badge = (
+                    f"[REGLA {t['rule_id']}, conf={t['confidence']:.2f}]"
+                    if src == "RULE"
+                    else f"[{src}, conf={t['confidence']:.3f}]"
+                    if src in ("KGE", "CBR")
+                    else f"[{src}]"
+                )
+                print(f"    · {_PROP_LABELS.get(p, p):22s} = {t['value']}  {badge}")
+
         out_dir  = cfg.OUT_DIR / "sessions"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "created_incidents.jsonl"
         record   = {
-            "timestamp":   datetime.now().isoformat(timespec="seconds"),
-            "kge_model":   self.kge_model_name,
-            "incident":    incident,
-            "llm_summary": llm_summary,
+            "timestamp":    datetime.now().isoformat(timespec="seconds"),
+            "kge_model":    self.kge_model_name,
+            "incident":     incident,
+            "traceability": self._trace,
+            "llm_summary":  llm_summary,
         }
         with open(out_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
