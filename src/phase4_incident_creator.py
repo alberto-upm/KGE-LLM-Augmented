@@ -146,12 +146,8 @@ def find_matching_incidents(known_props: dict, incidents_map: dict) -> list[str]
 
 
 # ---------------------------------------------------------------------------
-# Recomendación KGE vía proxies CBR
+# Recomendación KGE + CBR con Weighted Reciprocal Rank Fusion
 # ---------------------------------------------------------------------------
-
-# Reciprocal Rank Fusion: constante de suavizado (estándar IR).
-RRF_K = 60
-
 
 def recommend_property(
     known_props: dict,
@@ -163,18 +159,22 @@ def recommend_property(
 ) -> tuple[list[tuple[str, int, float]], int]:
     """
     Genera recomendaciones para target_prop combinando CBR + KGE mediante
-    Reciprocal Rank Fusion (RRF).
+    Weighted Reciprocal Rank Fusion (WRRF).
 
-    1. Encuentra proxies CBR (incidencias históricas con propiedades similares)
-    2. Para cada proxy, llama predict_tails(proxy, target_prop, top_k)
-    3. Para cada candidato calcula:
-         - rank_freq: posición al ordenar por frecuencia CBR (DESC)
-         - rank_kge:  posición al ordenar por score KGE medio (DESC)
-       y fusiona: RRF(o) = 1/(K + rank_freq) + 1/(K + rank_kge)
-    4. Fallback si no hay proxies: predict_heads sobre la primera prop conocida
+    Los dos rankings son independientes y se construyen de fuentes distintas:
+      - CBR: valores reales que los proxies históricos tenían en target_prop
+             (frecuencia de aparición), peso cfg.W_CBR.
+      - KGE: link prediction (predict_tails) sobre los mismos proxies,
+             agregado por score medio, peso cfg.W_KGE.
 
-    Devuelve (lista de (entity_label, frecuencia, score_medio), n_proxies)
-    ordenada por RRF DESC.
+    Un candidato puede aparecer en solo uno de los dos rankings; en ese caso
+    solo recibe la contribución de la fuente donde sí está presente.
+
+    Fórmula: WRRF(d) = W_KGE · 1/(K + rank_kge(d))
+                      + W_CBR · 1/(K + rank_cbr(d))
+
+    Devuelve ([(entity_label, cbr_freq, kge_mean_score), ...], n_proxies)
+    ordenado por WRRF DESC.
     """
     from src.phase3_link_prediction import predict_tails, predict_heads
 
@@ -191,31 +191,49 @@ def recommend_property(
         return [], 0
 
     n_proxies = len(proxies)
-    scores: dict[str, list[float]] = {}
-    for proxy in proxies[:30]:
+    proxies_sample = proxies[:30]
+
+    # --- Ranking CBR: frecuencia real del historial ---
+    cbr_freq: dict[str, int] = {}
+    for proxy in proxies_sample:
+        for val in incidents_map.get(proxy, {}).get(target_prop, []):
+            cbr_freq[val] = cbr_freq.get(val, 0) + 1
+
+    # --- Ranking KGE: link prediction agregado por score medio ---
+    kge_raw: dict[str, list[float]] = {}
+    for proxy in proxies_sample:
         for entity, score in predict_tails(model, factory, proxy, target_prop, top_k):
-            scores.setdefault(entity, []).append(score)
+            kge_raw.setdefault(entity, []).append(score)
+    kge_mean: dict[str, float] = {e: sum(sc) / len(sc) for e, sc in kge_raw.items()}
 
-    aggregated = [
-        (ent, len(sc), sum(sc) / len(sc))
-        for ent, sc in scores.items()
-    ]
+    # --- Unión de candidatos ---
+    all_candidates = set(cbr_freq) | set(kge_mean)
+    if not all_candidates:
+        return [], n_proxies
 
-    # Ranking 1: por frecuencia CBR (más votos = mejor rank)
-    by_freq = sorted(aggregated, key=lambda x: x[1], reverse=True)
-    rank_freq = {ent: i + 1 for i, (ent, _, _) in enumerate(by_freq)}
+    # Posiciones en cada ranking (solo para los candidatos presentes)
+    rank_cbr: dict[str, int] = {
+        e: i + 1
+        for i, e in enumerate(sorted(cbr_freq, key=cbr_freq.__getitem__, reverse=True))
+    }
+    rank_kge: dict[str, int] = {
+        e: i + 1
+        for i, e in enumerate(sorted(kge_mean, key=kge_mean.__getitem__, reverse=True))
+    }
 
-    # Ranking 2: por score KGE medio (mayor score = mejor rank)
-    by_kge = sorted(aggregated, key=lambda x: x[2], reverse=True)
-    rank_kge = {ent: i + 1 for i, (ent, _, _) in enumerate(by_kge)}
+    def wrrf(entity: str) -> float:
+        s = 0.0
+        if entity in rank_kge:
+            s += cfg.W_KGE / (cfg.RRF_K + rank_kge[entity])
+        if entity in rank_cbr:
+            s += cfg.W_CBR / (cfg.RRF_K + rank_cbr[entity])
+        return s
 
-    # Fusión RRF
-    aggregated.sort(
-        key=lambda x: 1.0 / (RRF_K + rank_freq[x[0]])
-                    + 1.0 / (RRF_K + rank_kge[x[0]]),
-        reverse=True,
-    )
-    return aggregated[:top_k], n_proxies
+    ranked = sorted(all_candidates, key=wrrf, reverse=True)[:top_k]
+    return [
+        (e, cbr_freq.get(e, 0), kge_mean.get(e, 0.0))
+        for e in ranked
+    ], n_proxies
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +314,10 @@ class IncidentCreatorSession:
               f"({len(_stats['head_preds'])} predicados de cabeza).")
 
         # Modelo KGE
-        from src.phase3_link_prediction import load_model_by_name
+        from src.phase3_link_prediction import load_model_by_name, get_best_model_name
+        if kge_model_name.lower() == "best":
+            kge_model_name = get_best_model_name()   # imprime el modelo elegido
+            self.kge_model_name = kge_model_name     # sobreescribe antes de usar
         print(f"  [3/4] Cargando modelo KGE: {kge_model_name} ...")
         self.model, self.factory = load_model_by_name(kge_model_name)
 
@@ -749,8 +770,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Creador guiado de incidencias con CBR + KGE + LLM"
     )
-    parser.add_argument("--kge-model", default="TransE",
-                        help=f"Modelo KGE (default: DistMult). Opciones: {cfg.KGE_MODELS}")
+    parser.add_argument("--kge-model", default="best",
+                        help=f"Modelo KGE a usar. 'best' = mejor por MRR (default). "
+                             f"Opciones: {cfg.KGE_MODELS + ['best']}")
     parser.add_argument("--no-llm", action="store_true",
                         help="Desactivar LLM (menú numerado clásico)")
     parser.add_argument("--model", default=cfg.DEFAULT_MODEL,

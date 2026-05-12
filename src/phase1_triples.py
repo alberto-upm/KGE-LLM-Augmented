@@ -1,14 +1,24 @@
 """
 Fase 1 — Parseo del grafo RDF a tripletas TSV para PyKEEN.
 
-Split por incidencias: se dividen los IDs de incidencias (80/10/10)
-y todas las tripletas de cada incidencia van al mismo split.
-Tripletas cuyo head no es una incidencia van a train (entidades auxiliares).
+División en dos niveles por bloques de incidencias completas
+(nunca se corta una incidencia entre splits):
+
+  Nivel 1 — por IDs de incidencia:
+    95 % → train.tsv + valid.tsv  (usados por KGE y CBR)
+     5 % → test.tsv               (reservado para evaluación del sistema completo)
+
+  Nivel 2 — dentro del 95 % (lo hace Phase 2 KGE):
+    90 % del 95 % → entrenamiento KGE  (≈ 85.5 % del total)
+    10 % del 95 % → validación KGE     (≈  9.5 % del total)
+
+De este modo el 5 % de test nunca es visto por el KGE ni por el CBR
+y puede usarse para una evaluación realista del sistema completo.
 
 Salida:
-  data/triples/train.tsv   (80 % de incidencias + tripletas auxiliares)
-  data/triples/valid.tsv   (10 % de incidencias)
-  data/triples/test.tsv    (10 % de incidencias)
+  data/triples/train.tsv   (≈ 85.5 % de incidencias + tripletas auxiliares)
+  data/triples/valid.tsv   (≈  9.5 % de incidencias)
+  data/triples/test.tsv    (     5 % de incidencias — test de sistema)
   out/maps/entity_to_id.json
   out/maps/relation_to_id.json
 
@@ -170,7 +180,7 @@ def run() -> None:
     all_triples = extract_all_triples(g)
 
     # 3. Dividir por incidencias
-    print("[2/4] Dividiendo por incidencias en train/valid/test (80/10/10) ...")
+    print("[2/4] Dividiendo por incidencias en train/valid/test (≈85.5/9.5/5) ...")
     train_triples, valid_triples, test_triples = split_by_incident(all_triples)
 
     # 4. Guardar TSV

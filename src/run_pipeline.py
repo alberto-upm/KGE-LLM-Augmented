@@ -27,7 +27,15 @@ Uso:
   python src/run_pipeline.py --phase 6 --n-samples 100          # menos muestras
   python src/run_pipeline.py --phase 6 --kge-model TransE
 
-  # Comparación de modelos KGE
+  # Evaluaciones individuales
+  python src/run_pipeline.py --phase eval-kge-compare           # tabla comparativa de modelos
+  python src/run_pipeline.py --phase eval-kge                   # link prediction por predicado
+  python src/run_pipeline.py --phase eval-kge --kge-model ComplEx
+  python src/run_pipeline.py --phase eval-verbalizador          # cobertura del verbalizador
+  python src/run_pipeline.py --phase eval-sistema               # sistema completo (5 % test)
+  python src/run_pipeline.py --phase eval-sistema --n-samples 300
+
+  # Comparación de modelos KGE (legacy)
   python src/run_pipeline.py --phase compare --n-samples 200
   python src/run_pipeline.py --phase compare --verbalization-check
 
@@ -125,16 +133,31 @@ def run_phase3(top_k=None, kge_model=None):
     run(top_k=top_k or cfg.TOP_K_PREDICT, model_name=kge_model or 'TransE')
 
 
-def run_model_comparison(models=None, n_samples=None,
-                         verbalization_check=False, n_verb=50, verb_model='DistMult'):
-    from phase6_model_comparison import run
-    run(
-        models=models,
-        n_samples=n_samples,
-        verbalization_check=verbalization_check,
-        n_verb=n_verb,
-        verb_model=verb_model,
-    )
+def run_eval_kge_compare():
+    from src.evaluacion.eval_kge_comparacion import run
+    run()
+
+
+def run_eval_kge(kge_model=None, n_samples=None, top_k=10):
+    from src.evaluacion.eval_kge import run
+    run(model_name=kge_model or "best", top_k=top_k, n_samples=n_samples)
+
+
+def run_eval_verbalizador(n_samples=200, split="train"):
+    from src.evaluacion.eval_verbalizador import run
+    run(n_samples=n_samples, split=split)
+
+
+def run_eval_sistema(kge_model=None, n_samples=None, top_k=5):
+    from src.evaluacion.eval_sistema import run
+    run(model_name=kge_model or "best", top_k=top_k, n_samples=n_samples)
+
+
+def run_model_comparison(n_samples=None, verbalization_check=False):
+    """Legacy: redirige a las nuevas evaluaciones de src/evaluacion/."""
+    run_eval_kge_compare()
+    if verbalization_check:
+        run_eval_verbalizador(n_samples=n_samples or 50)
 
 
 def run_create_incident(kge_model=None, llm_model=None, no_llm=False, top_k=5):
@@ -153,14 +176,9 @@ def run_phase5():
     print("No tiene ejecución standalone.")
 
 
-def run_phase6(kge_model=None, n_samples=None, use_llm=False, llm_model=None):
-    from phase6_incident_creator_eval import run
-    run(
-        kge_model_name=kge_model or 'TransE',
-        n_samples=n_samples,
-        use_llm=use_llm,
-        llm_model_name=llm_model or cfg.DEFAULT_MODEL,
-    )
+def run_phase6(kge_model=None, n_samples=None):
+    """Legacy: redirige a eval_sistema (evaluación del sistema completo)."""
+    run_eval_sistema(kge_model=kge_model, n_samples=n_samples)
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +194,12 @@ def main():
     parser.add_argument(
         "--phase",
         default="all",
-        choices=["all", "1", "2", "3", "5", "6",
-                 "compare", "create_incident"],
+        choices=[
+            "all", "1", "2", "3", "5", "6",
+            "compare", "create_incident",
+            "eval-kge-compare", "eval-kge",
+            "eval-verbalizador", "eval-sistema",
+        ],
         help="Fase a ejecutar (default: all)",
     )
     # Opciones Phase 2 — entrenamiento KGE
@@ -237,19 +259,27 @@ def main():
         elif p == "5":
             run_phase5()
         elif p == "6":
-            run_phase6(
-                kge_model=args.kge_model,
-                n_samples=args.n_samples,
-                use_llm=not args.no_llm,
-                llm_model=args.model,
-            )
+            run_phase6(kge_model=args.kge_model, n_samples=args.n_samples)
         elif p == "compare":
             run_model_comparison(
-                models=args.kge_models,
                 n_samples=args.n_samples,
                 verbalization_check=args.verbalization_check,
-                n_verb=args.n_verb,
-                verb_model=args.kge_model or 'TransE',
+            )
+        elif p == "eval-kge-compare":
+            run_eval_kge_compare()
+        elif p == "eval-kge":
+            run_eval_kge(
+                kge_model=args.kge_model,
+                n_samples=args.n_samples,
+                top_k=args.top_k or 10,
+            )
+        elif p == "eval-verbalizador":
+            run_eval_verbalizador(n_samples=args.n_samples or 200)
+        elif p == "eval-sistema":
+            run_eval_sistema(
+                kge_model=args.kge_model,
+                n_samples=args.n_samples,
+                top_k=args.top_k or 5,
             )
         elif p == "create_incident":
             run_create_incident(

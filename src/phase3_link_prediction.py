@@ -53,6 +53,29 @@ def load_model_and_factory():
     return load_model_by_name('DistMult')
 
 
+def get_best_model_name() -> str:
+    """
+    Lee best_model.json y devuelve el nombre del modelo con mejor MRR.
+    Requiere haber ejecutado:  python src/phase2_kge_train.py --all-models
+    """
+    import json
+    if not cfg.BEST_MODEL_FILE.exists():
+        raise FileNotFoundError(
+            f"No existe {cfg.BEST_MODEL_FILE}\n"
+            "Ejecuta primero:  python src/phase2_kge_train.py --all-models"
+        )
+    with open(cfg.BEST_MODEL_FILE, encoding="utf-8") as f:
+        best = json.load(f)
+    print(f"  [Mejor modelo] {best['model']}  "
+          f"(MRR={best.get('mrr', 0):.4f}, Hit@10={best.get('hit@10', 0):.4f})")
+    return best["model"]
+
+
+def load_best_model():
+    """Carga el modelo con mejor MRR. Misma firma que load_model_by_name."""
+    return load_model_by_name(get_best_model_name())
+
+
 # ---------------------------------------------------------------------------
 # Predicción de cola (tail prediction)
 # ---------------------------------------------------------------------------

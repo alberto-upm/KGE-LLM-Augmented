@@ -47,7 +47,7 @@ EVAL_RESULTS_FILE   = EVAL_DIR / "results.json"
 # Multi-model KGE
 # ---------------------------------------------------------------------------
 
-KGE_MODELS = ['TransE', 'DistMult', 'ComplEx']
+KGE_MODELS = ['TransE', 'DistMult', 'ComplEx', 'RotatE', 'PairRE']
 
 
 def model_dir(model_name: str) -> Path:
@@ -88,6 +88,7 @@ GLINER_MODEL = "fastino/gliner2-base-v1"
 
 LP_EVAL_CORPUS       = CORPUS_DIR / "link_prediction_eval.json"
 MODEL_COMPARISON_DIR = EVAL_DIR / "model_comparison"
+BEST_MODEL_FILE      = MODEL_COMPARISON_DIR / "best_model.json"
 
 # Entity-to-entity evaluation corpus
 ENTITY_EVAL_CORPUS = CORPUS_DIR / "entity_to_entity_eval.json"
@@ -113,9 +114,20 @@ LEARNING_RATE  = 1e-3
 NEG_PER_POS    = 128      # 128 para NSSA (escala con negativos), 50 default A100, 10 fallback CPU
 RANDOM_SEED    = 42
 
-TRAIN_RATIO    = 0.80
-VALID_RATIO    = 0.10
-# TEST_RATIO = 0.10 (implícito)
+# División en dos niveles:
+#   Nivel 1 (por bloques de incidencias, Phase 1):
+#     95 % → entrenamiento + validación KGE
+#      5 % → test del SISTEMA COMPLETO (nunca visto por KGE ni CBR)
+#   Nivel 2 (dentro del 95 %, Phase 2 KGE):
+#     90 % del 95 % → entrenamiento KGE  (≈ 85.5 % del total)
+#     10 % del 95 % → validación KGE     (≈  9.5 % del total)
+
+SYSTEM_TEST_RATIO = 0.05   # bloques reservados para evaluación del sistema
+KGE_VALID_SPLIT   = 0.10   # fracción del 95 % usada para validación KGE
+
+TRAIN_RATIO = round((1 - SYSTEM_TEST_RATIO) * (1 - KGE_VALID_SPLIT), 4)  # 0.855
+VALID_RATIO = round((1 - SYSTEM_TEST_RATIO) * KGE_VALID_SPLIT,       4)  # 0.095
+# TEST_RATIO = SYSTEM_TEST_RATIO = 0.05 (implícito: 1 - TRAIN_RATIO - VALID_RATIO)
 
 # ---------------------------------------------------------------------------
 # LLM — vLLM (servidor local OpenAI-compatible)
@@ -138,3 +150,11 @@ EVAL_SAMPLE_N   = 200          # nº de Q&A a evaluar en phase6
 HIT_K_VALUES    = [1, 3, 10]   # valores de k para Hit@k
 TOP_K_PREDICT   = 10           # top-k en link prediction (phase3)
 TOP_K_SIMILAR   = 5            # incidencias similares en CBR (phase5)
+
+# ---------------------------------------------------------------------------
+# Weighted RRF (fusión KGE + CBR en recommend_property)
+# ---------------------------------------------------------------------------
+
+RRF_K   = 60    # constante de suavizado (estándar IR)
+W_KGE   = 0.7   # peso del ranking KGE (link prediction)
+W_CBR   = 0.3   # peso del ranking CBR (frecuencia histórica real)
